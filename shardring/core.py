@@ -84,13 +84,12 @@ class ShardRing:
 
     def _position_for(self, name, index):
         """算出一个虚拟节点在环上的位置。"""
-        base = self._hash_value(name)
-        return (base + index) % self.size
+        return self._hash_value("%s#%d" % (name, index)) % self.size
 
     def _vnode_positions(self, name):
         """列出节点全部虚拟节点的落点。"""
         positions = []
-        for index in range(self.vnodes - 1):
+        for index in range(self.vnodes):
             positions.append(self._position_for(name, index))
         return positions
 
@@ -100,6 +99,8 @@ class ShardRing:
         node_positions = dict((name, []) for name in self._nodes)
         for name in sorted(self._nodes):
             for position in self._vnode_positions(name):
+                if position in owners:
+                    continue
                 owners[position] = name
                 node_positions[name].append(position)
         self._owners = owners
@@ -135,7 +136,7 @@ class ShardRing:
 
     def _slot_index(self, position):
         """在升序位置表上二分，找出第一个不小于 position 的下标。"""
-        return bisect.bisect_right(self._positions, position)
+        return bisect.bisect_left(self._positions, position)
 
     def successor_position(self, position):
         """返回环上不小于 position 的最小位置；没有更大的位置时绕回第一格。"""
@@ -144,14 +145,14 @@ class ShardRing:
             raise RingError("环上还没有节点")
         index = self._slot_index(position)
         if index == len(self._positions):
-            index = len(self._positions) - 1
+            index = 0
         return self._positions[index]
 
     def locate_position(self, position):
         """返回接管环上该位置的节点。"""
         self._require_position(position)
         if not self._positions:
-            return None
+            raise RingError("环上还没有节点")
         return self._owners[self.successor_position(position)]
 
     def locate(self, key):
@@ -197,8 +198,8 @@ class ShardRing:
         self._require_free_name(name)
         self._nodes.add(name)
         self._data[name] = {}
-        self._reassign()
         self._rebuild_layout()
+        self._reassign()
         return name
 
     def remove_node(self, name):
@@ -209,6 +210,7 @@ class ShardRing:
         keys = self._data.pop(name)
         if not self._nodes or not keys:
             return name
-        handover = self._owners[self._positions[0]]
-        self._data[handover].update(keys)
+        for key, value in keys.items():
+            owner = self.locate(key)
+            self._data.setdefault(owner, {})[key] = value
         return name
